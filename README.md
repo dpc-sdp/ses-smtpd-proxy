@@ -109,6 +109,12 @@ docker pull ghcr.io/dpc-sdp/ses-smtpd-proxy:latest
 For a local build, run `make docker`; its default image is
 `ghcr.io/dpc-sdp/ses-smtpd-proxy:latest`.
 
+## Releases
+
+Releases are managed with Release Please from commits merged to `master`.
+When a release is created, the workflow publishes matching semver image tags to
+`ghcr.io/dpc-sdp/ses-smtpd-proxy`.
+
 ## Dependency updates
 
 Self-hosted Renovate runs weekly and updates Go modules, Docker base images,
