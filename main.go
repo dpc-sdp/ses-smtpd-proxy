@@ -73,6 +73,18 @@ type awsClientFactory struct {
 	newSTS func(aws.Config) stsAPI
 }
 
+type assumeRoleStartupError struct {
+	err error
+}
+
+func (e *assumeRoleStartupError) Error() string {
+	return e.err.Error()
+}
+
+func (e *assumeRoleStartupError) Unwrap() error {
+	return e.err
+}
+
 func defaultAWSClientFactory() awsClientFactory {
 	return awsClientFactory{
 		newSES: func(cfg aws.Config) sesAPI {
@@ -237,7 +249,7 @@ func makeSesClient(ctx context.Context, roleARN, sessionName string, loadConfig 
 	if roleARN != "" {
 		cfg, err = configureAssumeRole(ctx, cfg, roleARN, sessionName, clients.newSTS)
 		if err != nil {
-			return nil, err
+			return nil, &assumeRoleStartupError{err: err}
 		}
 	}
 
@@ -289,7 +301,8 @@ func main() {
 		if errors.Is(err, errNoAWSRegion) {
 			log.Fatal("ERROR: no AWS region configured; set AWS_REGION")
 		}
-		if *assumeRole != "" {
+		var assumeRoleErr *assumeRoleStartupError
+		if errors.As(err, &assumeRoleErr) {
 			fatalAssumeRoleError(*assumeRole, err)
 		}
 		log.Fatalf("Error creating AWS session: %s", err)
