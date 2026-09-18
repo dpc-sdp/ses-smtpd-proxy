@@ -4,8 +4,9 @@ on:
   push:
     branches:
       - master
-    tags:
-      - "v*"
+  release:
+    types:
+      - published
   pull_request:
   workflow_dispatch:
 
@@ -61,11 +62,15 @@ jobs:
         id: version
         shell: bash
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            echo "value=${GITHUB_EVENT_RELEASE_TAG_NAME}" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           else
             echo "value=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
+        env:
+          GITHUB_EVENT_RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
       - name: Build and publish image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
