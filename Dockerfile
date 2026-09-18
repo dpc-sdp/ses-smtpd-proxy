@@ -1,12 +1,17 @@
-FROM golang:1.23-alpine AS builder
-ARG VERSION
-RUN apk add --no-cache make 
+FROM golang:1.24.2-alpine@sha256:7772cb5322baa875edd74705556d08f0eeca7b9c4b5367754ce3f2f00041ccee AS builder
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY . .
-RUN VERSION=$VERSION make ses-smtpd-proxy
+ARG VERSION
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /ses-smtpd-proxy .
 
-FROM alpine:latest
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
-RUN apk add --no-cache ca-certificates
-COPY --from=builder /go/ses-smtpd-proxy /
+COPY --from=builder /ses-smtpd-proxy /ses-smtpd-proxy
 
-ENTRYPOINT [ "/ses-smtpd-proxy" ]
+USER nonroot:nonroot
+EXPOSE 2500 2501 3000
+ENTRYPOINT ["/ses-smtpd-proxy"]
