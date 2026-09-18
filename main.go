@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -10,13 +11,16 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"code.crute.us/mcrute/ses-smtpd-proxy/smtpd"
-	"code.crute.us/mcrute/ses-smtpd-proxy/vault"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ses"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+	"github.com/aws/aws-sdk-go-v2/service/ses"
+	"github.com/aws/aws-sdk-go-v2/service/ses/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -25,11 +29,14 @@ import (
 var version string
 
 const (
-	SesSizeLimit = 10000000
-	DefaultAddr  = ":2500"
+	SesSizeLimit      = 10000000
+	DefaultAddr       = ":2500"
+	sesRequestTimeout = 30 * time.Second
 )
 
 var (
+	errNoAWSRegion = errors.New("no AWS region configured; set AWS_REGION")
+
 	emailSent = promauto.NewCounter(prometheus.CounterOpts{
 		Namespace: "smtpd",
 		Name:      "email_send_success_total",
@@ -47,17 +54,46 @@ var (
 	})
 )
 
+type sesAPI interface {
+	SendRawEmail(context.Context, *ses.SendRawEmailInput, ...func(*ses.Options)) (*ses.SendRawEmailOutput, error)
+}
+
+type getCallerIdentityAPI interface {
+	GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
+}
+
+type stsAPI interface {
+	stscreds.AssumeRoleAPIClient
+	getCallerIdentityAPI
+}
+
+type awsClientFactory struct {
+	newSES func(aws.Config) sesAPI
+	newSTS func(aws.Config) stsAPI
+}
+
+func defaultAWSClientFactory() awsClientFactory {
+	return awsClientFactory{
+		newSES: func(cfg aws.Config) sesAPI {
+			return ses.NewFromConfig(cfg)
+		},
+		newSTS: func(cfg aws.Config) stsAPI {
+			return sts.NewFromConfig(cfg)
+		},
+	}
+}
+
 type Envelope struct {
 	from          string
-	client        *ses.SES
+	ctx           context.Context
+	client        sesAPI
 	configSetName *string
-	rcpts         []*string
+	rcpts         []string
 	b             bytes.Buffer
 }
 
 func (e *Envelope) AddRecipient(rcpt smtpd.MailAddress) error {
-	email := rcpt.Email()
-	e.rcpts = append(e.rcpts, &email)
+	e.rcpts = append(e.rcpts, rcpt.Email())
 	return nil
 }
 
@@ -80,24 +116,32 @@ func (e *Envelope) Write(line []byte) error {
 }
 
 func (e *Envelope) logMessageSend() {
-	dr := make([]string, len(e.rcpts))
-	for i := range e.rcpts {
-		dr[i] = *e.rcpts[i]
-	}
-	log.Printf("sending message from %+v to %+v", e.from, dr)
+	log.Printf("sending message from %+v to %+v", e.from, e.rcpts)
 	emailSent.Inc()
 }
 
 func (e *Envelope) Close() error {
+	ctx := e.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, sesRequestTimeout)
+	defer cancel()
+
 	r := &ses.SendRawEmailInput{
 		ConfigurationSetName: e.configSetName,
-		Source:               &e.from,
+		Source:               aws.String(e.from),
 		Destinations:         e.rcpts,
-		RawMessage:           &ses.RawMessage{Data: e.b.Bytes()},
+		RawMessage:           &types.RawMessage{Data: e.b.Bytes()},
 	}
-	_, err := e.client.SendRawEmail(r)
+	_, err := e.client.SendRawEmail(ctx, r)
 	if err != nil {
-		log.Printf("ERROR: ses: %v", err)
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) {
+			log.Printf("ERROR: ses: %s: %s", apiErr.ErrorCode(), apiErr.ErrorMessage())
+		} else {
+			log.Printf("ERROR: ses: %v", err)
+		}
 		emailError.With(prometheus.Labels{"type": "ses error"}).Inc()
 		sesError.Inc()
 		return smtpd.SMTPError("451 4.5.1 Temporary server error. Please try again later")
@@ -106,27 +150,89 @@ func (e *Envelope) Close() error {
 	return err
 }
 
-func makeSesClient(ctx context.Context, enableVault bool, vaultPath string, credentialError chan<- error) (*ses.SES, error) {
-	var err error
-	var s *session.Session
+type loggingCredentialsProvider struct {
+	roleARN  string
+	provider aws.CredentialsProvider
+}
 
-	if enableVault {
-		cred, err := vault.GetVaultSecret(ctx, vaultPath, credentialError)
-		if err != nil {
-			return nil, err
-		}
-
-		s, err = session.NewSession(&aws.Config{
-			Credentials: credentials.NewStaticCredentialsFromCreds(cred),
-		})
-	} else {
-		s, err = session.NewSession()
+func (p *loggingCredentialsProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
+	credentials, err := p.provider.Retrieve(ctx)
+	if err != nil {
+		log.Printf("assume-role: ERROR refreshing credentials for %s: %v", p.roleARN, err)
+		return aws.Credentials{}, err
 	}
+	log.Printf("assume-role: refreshed credentials for %s, expire %s", p.roleARN, credentials.Expires.Format(time.RFC3339))
+	return credentials, nil
+}
+
+func configureAssumeRole(ctx context.Context, baseCfg aws.Config, roleARN, sessionName string, newSTS func(aws.Config) stsAPI) (aws.Config, error) {
+	baseIdentity, err := newSTS(baseCfg).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		log.Printf("assume-role: ERROR resolving base credentials: %v", err)
+		return aws.Config{}, fmt.Errorf("resolve base credentials: %w", err)
+	}
+	log.Printf("assume-role: base identity %s", aws.ToString(baseIdentity.Arn))
+	log.Printf("assume-role: assuming %s (session %s)", roleARN, sessionName)
+
+	provider := stscreds.NewAssumeRoleProvider(
+		newSTS(baseCfg),
+		roleARN,
+		func(options *stscreds.AssumeRoleOptions) {
+			options.RoleSessionName = sessionName
+		},
+	)
+	credentials := aws.NewCredentialsCache(
+		&loggingCredentialsProvider{roleARN: roleARN, provider: provider},
+		func(options *aws.CredentialsCacheOptions) {
+			options.ExpiryWindow = time.Minute
+		},
+	)
+
+	assumedCfg := baseCfg
+	assumedCfg.Credentials = credentials
+	assumedCredentials, err := credentials.Retrieve(ctx)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("retrieve assumed credentials: %w", err)
+	}
+
+	assumedIdentity, err := newSTS(assumedCfg).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("resolve assumed identity: %w", err)
+	}
+	log.Printf("assume-role: assumed %s, credentials expire %s", aws.ToString(assumedIdentity.Arn), assumedCredentials.Expires.Format(time.RFC3339))
+
+	return assumedCfg, nil
+}
+
+func loadDefaultAWSConfig(ctx context.Context) (aws.Config, error) {
+	return config.LoadDefaultConfig(ctx)
+}
+
+func makeSesClient(ctx context.Context, roleARN, sessionName string, loadConfig func(context.Context) (aws.Config, error), clients awsClientFactory) (sesAPI, error) {
+	cfg, err := loadConfig(ctx)
 	if err != nil {
 		return nil, err
 	}
+	if cfg.Region == "" {
+		return nil, errNoAWSRegion
+	}
 
-	return ses.New(s), nil
+	if roleARN != "" {
+		cfg, err = configureAssumeRole(ctx, cfg, roleARN, sessionName, clients.newSTS)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return clients.newSES(cfg), nil
+}
+
+func fatalAssumeRoleError(roleARN string, err error) {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		log.Fatalf("assume-role: ERROR assuming %s: %s: %s", roleARN, apiErr.ErrorCode(), apiErr.ErrorMessage())
+	}
+	log.Fatalf("assume-role: ERROR assuming %s: %v", roleARN, err)
 }
 
 func main() {
@@ -137,8 +243,8 @@ func main() {
 
 	disablePrometheus := flag.Bool("disable-prometheus", false, "Disables prometheus metrics server")
 	prometheusBind := flag.String("prometheus-bind", ":2501", "Address/port on which to bind Prometheus server")
-	enableVault := flag.Bool("enable-vault", false, "Enable fetching AWS IAM credentials from a Vault server")
-	vaultPath := flag.String("vault-path", "", "Full path to Vault credential (ex: \"aws/creds/my-mail-user\")")
+	assumeRole := flag.String("assume-role", "", "IAM role ARN to assume for SES calls")
+	assumeRoleSessionName := flag.String("assume-role-session-name", "ses-smtpd-proxy", "Session name to use when assuming an IAM role")
 	showVersion := flag.Bool("version", false, "Show program version")
 	configurationSetName := flag.String("configuration-set-name", "", "Configuration set name with which SendRawEmail will be invoked")
 	enableHealthCheck := flag.Bool("enable-health-check", false, "Enable health check server")
@@ -161,9 +267,14 @@ func main() {
 		go ps.ListenAndServe()
 	}
 
-	credentialError := make(chan error, 2)
-	sesClient, err := makeSesClient(ctx, *enableVault, *vaultPath, credentialError)
+	sesClient, err := makeSesClient(ctx, *assumeRole, *assumeRoleSessionName, loadDefaultAWSConfig, defaultAWSClientFactory())
 	if err != nil {
+		if errors.Is(err, errNoAWSRegion) {
+			log.Fatal("ERROR: no AWS region configured; set AWS_REGION")
+		}
+		if *assumeRole != "" {
+			fatalAssumeRoleError(*assumeRole, err)
+		}
 		log.Fatalf("Error creating AWS session: %s", err)
 	}
 
@@ -190,6 +301,7 @@ func main() {
 		OnNewMail: func(c smtpd.Connection, from smtpd.MailAddress) (smtpd.Envelope, error) {
 			return &Envelope{
 				from:          from.Email(),
+				ctx:           ctx,
 				client:        sesClient,
 				configSetName: configurationSetName,
 			}, nil
@@ -203,12 +315,6 @@ func main() {
 		}
 	}()
 
-	select {
-	case <-ctx.Done():
-		log.Printf("SIGTERM/SIGINT received, shutting down")
-		os.Exit(0)
-	case err := <-credentialError:
-		log.Fatalf("Error renewing credential: %s", err)
-		os.Exit(1)
-	}
+	<-ctx.Done()
+	log.Printf("SIGTERM/SIGINT received, shutting down")
 }
