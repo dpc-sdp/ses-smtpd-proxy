@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -151,8 +152,10 @@ func (e *Envelope) Close() error {
 }
 
 type loggingCredentialsProvider struct {
-	roleARN  string
-	provider aws.CredentialsProvider
+	roleARN        string
+	provider       aws.CredentialsProvider
+	mu             sync.Mutex
+	lastExpiration time.Time
 }
 
 func (p *loggingCredentialsProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
@@ -161,8 +164,17 @@ func (p *loggingCredentialsProvider) Retrieve(ctx context.Context) (aws.Credenti
 		log.Printf("assume-role: ERROR refreshing credentials for %s: %v", p.roleARN, err)
 		return aws.Credentials{}, err
 	}
+	p.mu.Lock()
+	p.lastExpiration = credentials.Expires
+	p.mu.Unlock()
 	log.Printf("assume-role: refreshed credentials for %s, expire %s", p.roleARN, credentials.Expires.Format(time.RFC3339))
 	return credentials, nil
+}
+
+func (p *loggingCredentialsProvider) expiration() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastExpiration
 }
 
 func configureAssumeRole(ctx context.Context, baseCfg aws.Config, roleARN, sessionName string, newSTS func(aws.Config) stsAPI) (aws.Config, error) {
@@ -181,8 +193,9 @@ func configureAssumeRole(ctx context.Context, baseCfg aws.Config, roleARN, sessi
 			options.RoleSessionName = sessionName
 		},
 	)
+	loggingProvider := &loggingCredentialsProvider{roleARN: roleARN, provider: provider}
 	credentials := aws.NewCredentialsCache(
-		&loggingCredentialsProvider{roleARN: roleARN, provider: provider},
+		loggingProvider,
 		func(options *aws.CredentialsCacheOptions) {
 			options.ExpiryWindow = time.Minute
 		},
@@ -199,7 +212,11 @@ func configureAssumeRole(ctx context.Context, baseCfg aws.Config, roleARN, sessi
 	if err != nil {
 		return aws.Config{}, fmt.Errorf("resolve assumed identity: %w", err)
 	}
-	log.Printf("assume-role: assumed %s, credentials expire %s", aws.ToString(assumedIdentity.Arn), assumedCredentials.Expires.Format(time.RFC3339))
+	expiration := loggingProvider.expiration()
+	if expiration.IsZero() {
+		expiration = assumedCredentials.Expires
+	}
+	log.Printf("assume-role: assumed %s, credentials expire %s", aws.ToString(assumedIdentity.Arn), expiration.Format(time.RFC3339))
 
 	return assumedCfg, nil
 }
