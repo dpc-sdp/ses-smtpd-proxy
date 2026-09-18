@@ -1,0 +1,54 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "enabledManagers": [
+    "gomod",
+    "dockerfile",
+    "github-actions"
+  ],
+  "packageRules": [
+    {
+      "description": "Run go mod tidy after Go module updates",
+      "matchManagers": [
+        "gomod"
+      ],
+      "postUpdateOptions": [
+        "gomodTidy"
+      ]
+    },
+    {
+      "description": "Keep major updates separate",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "separateMajorMinor": true,
+      "separateMultipleMajor": true
+    },
+    {
+      "description": "Group other non-major dependency updates",
+      "matchUpdateTypes": [
+        "digest",
+        "minor",
+        "patch"
+      ],
+      "excludePackageNames": [
+        "/^github\\.com\\/aws\\/aws-sdk-go-v2(?:\\/.*)?$/",
+        "github.com/aws/smithy-go"
+      ],
+      "groupName": "all non-major dependency updates",
+      "groupSlug": "all-non-major-dependencies"
+    },
+    {
+      "description": "Group AWS SDK for Go v2 updates",
+      "matchPackageNames": [
+        "/^github\\.com\\/aws\\/aws-sdk-go-v2(?:\\/.*)?$/",
+        "github.com/aws/smithy-go"
+      ],
+      "groupName": "AWS SDK for Go v2",
+      "groupSlug": "aws-sdk-go-v2"
+    }
+  ]
+}
