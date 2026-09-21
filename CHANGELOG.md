@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.1](https://github.com/dpc-sdp/ses-smtpd-proxy/compare/v2.1.0...v2.1.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* use release-please v-prefixed tags  ([#12](https://github.com/dpc-sdp/ses-smtpd-proxy/issues/12)) ([3cc2ceb](https://github.com/dpc-sdp/ses-smtpd-proxy/commit/3cc2ceb50c362488438d5d5a969b7af0db7286e3))
+
 ## [2.1.0](https://github.com/dpc-sdp/ses-smtpd-proxy/compare/v2.0.0...v2.1.0) (2026-09-21)
 
 
