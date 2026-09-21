@@ -369,3 +369,30 @@ func TestApplyFlagEnvironmentDefaultsReturnsErrorForInvalidValue(t *testing.T) {
 		t.Fatalf("error = %q, want env var name included", got)
 	}
 }
+
+func TestDefaultAssumeRoleSessionNameUsesHostname(t *testing.T) {
+	got := defaultAssumeRoleSessionName(func() (string, error) {
+		return "smtp-proxy-host", nil
+	})
+	if got != "smtp-proxy-host" {
+		t.Fatalf("defaultAssumeRoleSessionName() = %q, want %q", got, "smtp-proxy-host")
+	}
+}
+
+func TestDefaultAssumeRoleSessionNameFallsBackOnHostnameError(t *testing.T) {
+	got := defaultAssumeRoleSessionName(func() (string, error) {
+		return "", errors.New("hostname unavailable")
+	})
+	if got != "ses-smtpd-proxy" {
+		t.Fatalf("defaultAssumeRoleSessionName() = %q, want %q", got, "ses-smtpd-proxy")
+	}
+}
+
+func TestDefaultAssumeRoleSessionNameFallsBackOnEmptyHostname(t *testing.T) {
+	got := defaultAssumeRoleSessionName(func() (string, error) {
+		return "", nil
+	})
+	if got != "ses-smtpd-proxy" {
+		t.Fatalf("defaultAssumeRoleSessionName() = %q, want %q", got, "ses-smtpd-proxy")
+	}
+}
