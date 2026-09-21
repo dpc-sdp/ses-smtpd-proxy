@@ -21,6 +21,12 @@ expected by Go's http.Server.
 Prometheus metric serving (though not metric aggregation) can be
 disabled by passing ``--disable-prometheus`` on the command line.
 
+Exported metrics:
+
+- `smtpd_email_send_success_total`: Total number of successfully sent emails.
+- `smtpd_email_send_fail_total{type="<reason>"}`: Total number of failed email sends, labeled by failure type.
+- `smtpd_ses_error_total`: Total number of SES API errors.
+
 ## Health Check Integration
 
 A simple health check can be enabled by passing `--enable-health-check` 
