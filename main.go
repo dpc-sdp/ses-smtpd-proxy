@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -264,6 +265,29 @@ func fatalAssumeRoleError(roleARN string, err error) {
 	log.Fatalf("assume-role: ERROR assuming %s: %v", roleARN, err)
 }
 
+func flagEnvironmentVariableName(flagName string) string {
+	sanitized := strings.ToUpper(strings.ReplaceAll(flagName, "-", "_"))
+	return "SES_SMTPD_PROXY_" + sanitized
+}
+
+func applyFlagEnvironmentDefaults(fs *flag.FlagSet, lookupEnv func(string) (string, bool)) error {
+	var applyErr error
+	fs.VisitAll(func(f *flag.Flag) {
+		if applyErr != nil {
+			return
+		}
+		envVarName := flagEnvironmentVariableName(f.Name)
+		value, ok := lookupEnv(envVarName)
+		if !ok {
+			return
+		}
+		if err := fs.Set(f.Name, value); err != nil {
+			applyErr = fmt.Errorf("invalid value for %s: %w", envVarName, err)
+		}
+	})
+	return applyErr
+}
+
 func main() {
 	var err error
 
@@ -278,6 +302,10 @@ func main() {
 	configurationSetName := flag.String("configuration-set-name", "", "Configuration set name with which SendRawEmail will be invoked")
 	enableHealthCheck := flag.Bool("enable-health-check", false, "Enable health check server")
 	healthCheckBind := flag.String("health-check-bind", ":3000", "Address/port on which to bind health check server")
+
+	if err := applyFlagEnvironmentDefaults(flag.CommandLine, os.LookupEnv); err != nil {
+		log.Fatal(err)
+	}
 
 	flag.Parse()
 

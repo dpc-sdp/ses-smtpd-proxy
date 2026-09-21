@@ -46,6 +46,21 @@ Configure credentials through the AWS SDK for Go v2 default credential chain.
 For example, a Kubernetes sidecar can use IRSA credentials supplied by its
 service account.
 
+All CLI flags can also be set using environment variables with the
+`SES_SMTPD_PROXY_` prefix. Flag names are uppercased and `-` is replaced with
+`_`:
+
+- `--disable-prometheus` → `SES_SMTPD_PROXY_DISABLE_PROMETHEUS`
+- `--prometheus-bind` → `SES_SMTPD_PROXY_PROMETHEUS_BIND`
+- `--assume-role` → `SES_SMTPD_PROXY_ASSUME_ROLE`
+- `--assume-role-session-name` → `SES_SMTPD_PROXY_ASSUME_ROLE_SESSION_NAME`
+- `--version` → `SES_SMTPD_PROXY_VERSION`
+- `--configuration-set-name` → `SES_SMTPD_PROXY_CONFIGURATION_SET_NAME`
+- `--enable-health-check` → `SES_SMTPD_PROXY_ENABLE_HEALTH_CHECK`
+- `--health-check-bind` → `SES_SMTPD_PROXY_HEALTH_CHECK_BIND`
+
+Command-line flags take precedence over environment variables.
+
 ## Assuming an IAM role
 
 Use `--assume-role` to assume an IAM role for all SES calls, and optionally

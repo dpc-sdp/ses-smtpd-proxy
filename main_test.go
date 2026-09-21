@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"log"
 	"strings"
 	"testing"
@@ -294,5 +295,77 @@ func TestEnvelopeReturnsSMTPErrorForSESAPIError(t *testing.T) {
 	}
 	if want := "ERROR: ses: Throttling: retry later"; !strings.Contains(logs.String(), want) {
 		t.Fatalf("log output %q does not contain %q", logs.String(), want)
+	}
+}
+
+func TestApplyFlagEnvironmentDefaults(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	disablePrometheus := fs.Bool("disable-prometheus", false, "")
+	prometheusBind := fs.String("prometheus-bind", ":2501", "")
+
+	err := applyFlagEnvironmentDefaults(fs, func(key string) (string, bool) {
+		values := map[string]string{
+			"SES_SMTPD_PROXY_DISABLE_PROMETHEUS": "true",
+			"SES_SMTPD_PROXY_PROMETHEUS_BIND":    ":9300",
+		}
+		value, ok := values[key]
+		return value, ok
+	})
+	if err != nil {
+		t.Fatalf("applyFlagEnvironmentDefaults() error = %v", err)
+	}
+
+	if !*disablePrometheus {
+		t.Fatal("disable-prometheus = false, want true")
+	}
+	if got := *prometheusBind; got != ":9300" {
+		t.Fatalf("prometheus-bind = %q, want %q", got, ":9300")
+	}
+}
+
+func TestApplyFlagEnvironmentDefaultsAllowsCLIOverride(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	disablePrometheus := fs.Bool("disable-prometheus", false, "")
+	prometheusBind := fs.String("prometheus-bind", ":2501", "")
+
+	err := applyFlagEnvironmentDefaults(fs, func(key string) (string, bool) {
+		values := map[string]string{
+			"SES_SMTPD_PROXY_DISABLE_PROMETHEUS": "true",
+			"SES_SMTPD_PROXY_PROMETHEUS_BIND":    ":9300",
+		}
+		value, ok := values[key]
+		return value, ok
+	})
+	if err != nil {
+		t.Fatalf("applyFlagEnvironmentDefaults() error = %v", err)
+	}
+
+	if err := fs.Parse([]string{"--disable-prometheus=false", "--prometheus-bind=:9400"}); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	if *disablePrometheus {
+		t.Fatal("disable-prometheus = true, want false")
+	}
+	if got := *prometheusBind; got != ":9400" {
+		t.Fatalf("prometheus-bind = %q, want %q", got, ":9400")
+	}
+}
+
+func TestApplyFlagEnvironmentDefaultsReturnsErrorForInvalidValue(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs.Bool("disable-prometheus", false, "")
+
+	err := applyFlagEnvironmentDefaults(fs, func(key string) (string, bool) {
+		if key == "SES_SMTPD_PROXY_DISABLE_PROMETHEUS" {
+			return "not-a-bool", true
+		}
+		return "", false
+	})
+	if err == nil {
+		t.Fatal("applyFlagEnvironmentDefaults() error = nil, want error")
+	}
+	if got := err.Error(); !strings.Contains(got, "SES_SMTPD_PROXY_DISABLE_PROMETHEUS") {
+		t.Fatalf("error = %q, want env var name included", got)
 	}
 }
