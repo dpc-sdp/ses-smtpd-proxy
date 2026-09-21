@@ -288,6 +288,16 @@ func applyFlagEnvironmentDefaults(fs *flag.FlagSet, lookupEnv func(string) (stri
 	return applyErr
 }
 
+func defaultAssumeRoleSessionName(lookupHostname func() (string, error)) string {
+	const fallback = "ses-smtpd-proxy"
+
+	hostname, err := lookupHostname()
+	if err != nil || hostname == "" {
+		return fallback
+	}
+	return hostname
+}
+
 func main() {
 	var err error
 
@@ -297,7 +307,7 @@ func main() {
 	disablePrometheus := flag.Bool("disable-prometheus", false, "Disables prometheus metrics server")
 	prometheusBind := flag.String("prometheus-bind", ":2501", "Address/port on which to bind Prometheus server")
 	assumeRole := flag.String("assume-role", "", "IAM role ARN to assume for SES calls")
-	assumeRoleSessionName := flag.String("assume-role-session-name", "ses-smtpd-proxy", "Session name to use when assuming an IAM role")
+	assumeRoleSessionName := flag.String("assume-role-session-name", defaultAssumeRoleSessionName(os.Hostname), "Session name to use when assuming an IAM role")
 	showVersion := flag.Bool("version", false, "Show program version")
 	configurationSetName := flag.String("configuration-set-name", "", "Configuration set name with which SendRawEmail will be invoked")
 	enableHealthCheck := flag.Bool("enable-health-check", false, "Enable health check server")

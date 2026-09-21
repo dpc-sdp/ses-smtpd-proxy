@@ -64,7 +64,7 @@ Command-line flags take precedence over environment variables.
 ## Assuming an IAM role
 
 Use `--assume-role` to assume an IAM role for all SES calls, and optionally
-set `--assume-role-session-name` (default: `ses-smtpd-proxy`):
+set `--assume-role-session-name` (default: local hostname, fallback `ses-smtpd-proxy`):
 
 ```
 ./ses-smtpd-proxy \
