@@ -6,6 +6,9 @@ on:
       - master
     tags:
       - v*
+  release:
+    types:
+      - published
   pull_request:
   workflow_dispatch:
 
@@ -55,7 +58,7 @@ jobs:
           tags: |
             type=sha,format=short,prefix=
             type=ref,event=branch
-            type=semver,pattern={{version}}
+            type=semver,pattern=v{{version}}
             type=raw,value=latest,enable={{is_default_branch}}
       - name: Determine binary version
         id: version
